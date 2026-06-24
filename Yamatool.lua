@@ -1,15 +1,7 @@
-----------------------------------------------------------------
--- BRM5 ULTIMATE v26.0
--- Fixed: ModeLbl/AmmoLbl nil race (GUI created before tasks)
--- Fixed: RenderStepped zero raycasts (cache read-only on render)
--- Fixed: VisScoreCache refresh moved to background tasks only
--- Optimized: locked target refreshed at 30Hz, all targets at 5Hz
-----------------------------------------------------------------
 local Rayfield    = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
 
--- Window created immediately so Rayfield loads before any RunService loops
 local Window = Rayfield:CreateWindow({
-    Name="BRM5 ULTIMATE v28.0", LoadingTitle="BRM5 Combat Suite",
+    Name="BRM5 ULTIMATE v35.0", LoadingTitle="BRM5 Combat Suite",
     LoadingSubtitle="v28.0 — Prediction overhauled: bullet speed, gravity, accel, dir change, convergence gate",
     ConfigurationSaving={Enabled=false},
 })
@@ -21,9 +13,6 @@ local CoreGui     = game:GetService("CoreGui")
 local Camera      = workspace.CurrentCamera
 local LocalPlayer = Players.LocalPlayer
 
-----------------------------------------------------------------
--- CLEANUP
-----------------------------------------------------------------
 for _, v in ipairs(workspace:GetDescendants()) do
     if v.Name == "ESPHighlight" then pcall(v.Destroy, v) end
 end
@@ -31,41 +20,37 @@ do local old = CoreGui:FindFirstChild("BRM5_HUD")  if old then old:Destroy() end
 do local old = CoreGui:FindFirstChild("BRM5_FOV")  if old then old:Destroy() end end
 do local old = CoreGui:FindFirstChild("BRM5_INFO") if old then old:Destroy() end end
 
-----------------------------------------------------------------
--- CONFIG
-----------------------------------------------------------------
 local Cfg = {
     MasterEnabled   = false,
-    Esp             = false,
+    Esp             = true,
     Autoshoot       = false,
-    NoRecoil        = false,
-    HoldToAim       = false,
-    AutoReload      = false,
-    CrosshairTarget = false,
-    Sensitivity     = 0.4,
-    Smoothing       = 1.2,
+    NoRecoil        = true,
+    HoldToAim       = true,
+    AutoReload      = true,
+    CrosshairTarget = true,
+    Sensitivity     = 0.3,
+    Smoothing       = 1.0,
     FovRadius       = 300,
     FovVisible      = true,
+    HideHUD         = false,
+    StickyLock      = false,
     VisibleColor    = Color3.fromRGB(0, 255, 0),
     HiddenColor     = Color3.fromRGB(255, 0, 0),
     FovColor        = Color3.fromRGB(255, 255, 255),
-    EspFill         = 0.5,
-    EspOutline      = 0.0,
-    SniperMode      = false,  -- removes range cap, tightens screen threshold
-    MaxRange        = 120,    -- studs, ignored in sniper mode
-    BulletSpeed     = 900,    -- studs/s: AR=900, Sniper=1500, SMG=700, Pistol=500
+    EspFill         = 0.6,
+    EspOutline      = 0.6,
+    SniperMode      = false,
+    MaxRange        = 120,
+    BulletSpeed     = 900,
 }
 
 local Keys = {
-    Master    = Enum.KeyCode.O,
+    Master    = Enum.KeyCode.Z,
     Esp       = Enum.KeyCode.U,
     Autoshoot = Enum.KeyCode.P,
     NoRecoil  = Enum.KeyCode.I,
 }
 
-----------------------------------------------------------------
--- STATE
-----------------------------------------------------------------
 local TargetList    = {}
 local LockedTarget  = nil
 local EspState      = {}
@@ -73,7 +58,6 @@ local PredState     = {}
 local VisScoreCache = {}
 local RMBHeld        = false
 local IsFiring       = false
-local NoRecoilCF     = nil
 local LastShotFired  = 0
 local IsReloading    = false
 local ReloadCooldown = false
@@ -85,11 +69,6 @@ local BindingKey     = nil
 
 local FMODE = { auto=0.09, semi=0.22, burst=0.10 }
 
-----------------------------------------------------------------
--- FIX: GUI CREATED FIRST — before any task.spawn or function
--- that references ModeLbl or AmmoLbl.
--- Previously these were created ~100 lines after their first use.
-----------------------------------------------------------------
 local FovGui = Instance.new("ScreenGui")
 FovGui.Name="BRM5_FOV"; FovGui.ResetOnSpawn=false; FovGui.Parent=CoreGui
 
@@ -118,13 +97,9 @@ local function MakeInfoLbl(text, y)
     return l
 end
 
--- FIX: ModeLbl and AmmoLbl exist NOW, before any function references them
 local ModeLbl = MakeInfoLbl("🔫 MODE: ---",  4)
 local AmmoLbl = MakeInfoLbl("📦 AMMO: ---", 24)
 
-----------------------------------------------------------------
--- RAYCAST PARAMS
-----------------------------------------------------------------
 local function BuildRayParams()
     local rp = RaycastParams.new()
     rp.FilterType = Enum.RaycastFilterType.Exclude
@@ -153,11 +128,6 @@ local function RayOrigin()
     return Camera.CFrame.Position + Camera.CFrame.LookVector * 0.5
 end
 
-----------------------------------------------------------------
--- MULTI-PART VISIBILITY SCORING
--- FIX: ComputeVisScore now ONLY called from background tasks.
--- RenderStepped reads ReadVisCache() — pure table lookup, zero raycasts.
-----------------------------------------------------------------
 local VIS_PARTS = {
     { name="Head",             weight=3 },
     { name="UpperTorso",       weight=3 },
@@ -174,7 +144,6 @@ local MAX_VIS_WEIGHT = (function()
     local t = 0; for _, p in ipairs(VIS_PARTS) do t = t + p.weight end; return t
 end)()
 
--- Always computes fresh — only called from background tasks
 local function ComputeVisScore(model)
     local o  = RayOrigin()
     local rp = GetRP()
@@ -199,19 +168,12 @@ local function ComputeVisScore(model)
     return score, bestPart
 end
 
--- FIX: Pure cache read — NO raycasts. Called from RenderStepped.
 local function ReadVisCache(model)
     local c = VisScoreCache[model]
     if c then return c.score, c.bestPart end
     return 0, nil
 end
 
-----------------------------------------------------------------
--- BACKGROUND VIS REFRESH TASKS
--- Task A (30Hz): refreshes ONLY the locked target — high priority
--- Task B (5Hz):  refreshes ALL targets for ESP colors
--- RenderStepped never calls ComputeVisScore — reads cache only.
-----------------------------------------------------------------
 task.spawn(function()
     while true do
         task.wait(0.033)  -- 30Hz
@@ -229,14 +191,11 @@ task.spawn(function()
             if e and e.Parent then
                 ComputeVisScore(e)
             end
-            task.wait()  -- yield between enemies to spread cost over frames
+            task.wait()
         end
     end
 end)
 
-----------------------------------------------------------------
--- TARGET VALIDITY
-----------------------------------------------------------------
 local function IsDead(model)
     if not model or not model.Parent then return true end
     local h = model:FindFirstChildOfClass("Humanoid")
@@ -274,9 +233,6 @@ local function BestAimPart(model)
     return nil, false
 end
 
-----------------------------------------------------------------
--- TARGET SCORING (reads cache — no raycasts)
-----------------------------------------------------------------
 local function ScoreTarget(model, screenDist, worldDist)
     local visScore = ReadVisCache(model)
     local distScore   = math.clamp(1 - (worldDist / 200), 0, 1)
@@ -284,17 +240,6 @@ local function ScoreTarget(model, screenDist, worldDist)
     return (visScore * 0.55) + (distScore * 0.25) + (screenScore * 0.20)
 end
 
-----------------------------------------------------------------
--- PREDICTION (v28 — fixed all 5 issues)
---
--- FIX 1: Bullet speed uses Cfg.BulletSpeed (was hardcoded 900)
--- FIX 2: Acceleration now INCREASES lead (was dampening it — backwards)
--- FIX 3: Gravity compensation added for Y axis (9.81 * travel^2 * 0.5)
--- FIX 4: Direction change rate factored in via angular velocity of vel
--- FIX 5: Lead only applied when aim is already converging on target
---        (checks crosshair is within FovRadius so we don't lead a
---         target we haven't caught up to yet)
-----------------------------------------------------------------
 local function Predict(model, part)
     local root = model:FindFirstChild("HumanoidRootPart")
              or model:FindFirstChild("Root") or part
@@ -308,57 +253,38 @@ local function Predict(model, part)
     local prev = PredState[model]
     local dt   = prev and math.clamp(now - prev.t, 0.001, 0.05) or 0.016
 
-    -- FIX 4: Track direction change rate (how fast velocity vector rotates)
-    -- If target is circle-strafing, their vel direction changes fast
-    -- We extrapolate the direction change to aim ahead of the arc
     local accel      = Vector3.zero
     local dirChange  = Vector3.zero
     if prev then
         accel = (vel - prev.vel) / dt
-        -- Angular rate of velocity direction change
+
         local prevDir = prev.vel.Magnitude > 0.1 and prev.vel.Unit or vel.Unit
         local curDir  = vel.Magnitude > 0.1 and vel.Unit or prevDir
-        dirChange = (curDir - prevDir) / dt  -- how fast direction is rotating
+        dirChange = (curDir - prevDir) / dt
     end
 
     PredState[model] = { vel=vel, t=now }
 
     local dist   = (Camera.CFrame.Position - part.Position).Magnitude
-    -- FIX 1: Use configurable bullet speed
     local travel = dist / Cfg.BulletSpeed
 
-    -- FIX 5: Only apply full prediction if aim is already near the target.
-    -- If crosshair is far from target, we haven't caught up yet — applying
-    -- lead now would make us chase the wrong point. Scale lead by proximity.
     local sPos, onScreen = Camera:WorldToViewportPoint(part.Position)
     local mouse = game:GetService("UserInputService"):GetMouseLocation()
     local sDist = onScreen and (Vector2.new(sPos.X,sPos.Y)-mouse).Magnitude or 999
     -- Lead factor: 0 when far from target, 1 when crosshair is on target
     local leadFactor = math.clamp(1 - (sDist / (Cfg.FovRadius * 0.5)), 0, 1)
 
-    -- FIX 2: Acceleration ADDS to lead (was subtracting — backwards)
-    -- Higher acceleration = more lead needed, not less
     local accelLead = accel * (travel * travel) * 0.5
 
-    -- FIX 4: Direction change adds a lateral offset to aim ahead of the arc
     local dirLead = dirChange * vel.Magnitude * (travel * travel) * 0.3
 
-    -- Base linear lead
     local linearLead = vel * travel
 
-    -- FIX 3: Gravity compensation — bullets drop over time
-    -- Gravity in Roblox = 196.2 studs/s^2 (default workspace gravity)
-    -- We lift the aim point up by how much the bullet will drop
-    local gravity     = workspace.Gravity  -- use actual workspace gravity
     local gravityDrop = Vector3.new(0, 0.5 * gravity * travel * travel, 0)
 
-    -- Combine all corrections, scaled by how close we are to the target
     return (linearLead + accelLead + dirLead + gravityDrop) * leadFactor
 end
 
-----------------------------------------------------------------
--- FIRE RATE
-----------------------------------------------------------------
 local function FireInterval(dist)
     local b = FMODE[CurrentMode] or 0.09
     if CurrentMode == "auto" then
@@ -373,9 +299,6 @@ local function FireInterval(dist)
     return b
 end
 
-----------------------------------------------------------------
--- AUTO RELOAD
-----------------------------------------------------------------
 local AMMO_PATH = {"HUDInterface","Frame","9","4","3","1","3"}
 local function FindAmmoLabel()
     local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui"); if not pg then return nil end
@@ -406,7 +329,6 @@ local function TriggerReload()
     end)
 end
 
--- FIX: AmmoLbl already exists when this task.spawn runs
 task.spawn(function()
     while true do
         if not AmmoLabel or not AmmoLabel.Parent then
@@ -427,10 +349,6 @@ task.spawn(function()
     end
 end)
 
-----------------------------------------------------------------
--- FIRE MODE DETECTION
--- FIX: ModeLbl already exists when ApplyMode is first called
-----------------------------------------------------------------
 local FMODE_PATH = {"HUDInterface","Frame","9","4","3","1","2"}
 local FModeNodes = nil
 
@@ -483,9 +401,6 @@ task.spawn(function()
     end
 end)
 
-----------------------------------------------------------------
--- PARTICLE DISABLER
-----------------------------------------------------------------
 local function KillFx(v)
     local c = v.ClassName
     if c=="ParticleEmitter" or c=="Smoke" or c=="Fire"
@@ -522,9 +437,6 @@ workspace.DescendantAdded:Connect(function(v)
     end
 end)
 
-----------------------------------------------------------------
--- ESP — 10Hz loop, reads VisScoreCache (no extra raycasts)
-----------------------------------------------------------------
 local function MakeESP(model)
     if model:FindFirstChild("ESPHighlight") then return end
     local h = Instance.new("Highlight")
@@ -563,7 +475,6 @@ workspace.DescendantRemoving:Connect(function(d)
     if LockedTarget == d then LockedTarget = nil end
 end)
 
--- Combined 10Hz loop: prune + ESP colors (reads cache — no raycasts)
 task.spawn(function()
     while true do
         for i = #TargetList, 1, -1 do
@@ -585,7 +496,6 @@ task.spawn(function()
             end
             h.Enabled = true
 
-            -- FIX: ReadVisCache — pure table read, no raycasts
             local score = ReadVisCache(e)
             local visible = score > 0.2
 
@@ -613,9 +523,6 @@ task.spawn(function()
     end
 end)
 
-----------------------------------------------------------------
--- INPUT
-----------------------------------------------------------------
 LocalPlayer.CharacterAdded:Connect(function()
     RayParams=nil; LastChar=nil; PredState={}; VisScoreCache={}; LockedTarget=nil
 end)
@@ -634,7 +541,12 @@ UIS.InputBegan:Connect(function(input, gp)
     end
 
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        if Cfg.NoRecoil then IsFiring=true; NoRecoilCF=Camera.CFrame end
+        if Cfg.NoRecoil then
+            IsFiring=true
+            local cf = Camera.CFrame
+            local p, y = cf:ToEulerAnglesYXZ()
+            NoRecoilPitch = p; NoRecoilYaw = y
+        end
     end
     if input.UserInputType == Enum.UserInputType.MouseButton2 then RMBHeld=true end
     if gp then return end
@@ -643,13 +555,13 @@ UIS.InputBegan:Connect(function(input, gp)
     if     k == Keys.Master    then
         Cfg.MasterEnabled = not Cfg.MasterEnabled
         Cfg.NoRecoil      = Cfg.MasterEnabled
-        if not Cfg.MasterEnabled then LockedTarget=nil; IsFiring=false; NoRecoilCF=nil end
+        if not Cfg.MasterEnabled then LockedTarget=nil; IsFiring=false end
         print("MASTER:", Cfg.MasterEnabled and "ON" or "OFF")
     elseif k == Keys.Esp       then Cfg.Esp = not Cfg.Esp; print("ESP:", Cfg.Esp and "ON" or "OFF")
     elseif k == Keys.Autoshoot then Cfg.Autoshoot = not Cfg.Autoshoot; print("AUTOSHOOT:", Cfg.Autoshoot and "ON" or "OFF")
     elseif k == Keys.NoRecoil  then
         Cfg.NoRecoil = not Cfg.NoRecoil
-        if not Cfg.NoRecoil then IsFiring=false; NoRecoilCF=nil end
+        if not Cfg.NoRecoil then IsFiring=false end
         print("NORECOIL:", Cfg.NoRecoil and "ON" or "OFF")
     elseif k == Enum.KeyCode.Zero then
         print("=== BRM5 DEBUG ===")
@@ -664,32 +576,25 @@ UIS.InputBegan:Connect(function(input, gp)
 end)
 
 UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then IsFiring=false; NoRecoilCF=nil end
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then IsFiring=false; NoRecoilYaw=nil; NoRecoilPitch=nil end
     if input.UserInputType == Enum.UserInputType.MouseButton2 then
         RMBHeld = false
         if Cfg.HoldToAim then LockedTarget = nil end
     end
 end)
 
-----------------------------------------------------------------
--- NO RECOIL
-----------------------------------------------------------------
+local NoRecoilYaw   = nil
+local NoRecoilPitch = nil
+
 RunService.RenderStepped:Connect(function()
-    if Cfg.NoRecoil and IsFiring and NoRecoilCF
-    and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
-        local cur = Camera.CFrame
-        Camera.CFrame = CFrame.new(cur.Position) * CFrame.Angles(
-            math.asin(math.clamp(NoRecoilCF.LookVector.Y, -1, 1)),
-            math.atan2(-NoRecoilCF.LookVector.X, -NoRecoilCF.LookVector.Z),
-            0
-        )
-    end
+    if not Cfg.NoRecoil or not IsFiring then return end
+    if not UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return end
+    if not NoRecoilYaw then return end
+    local pos = Camera.CFrame.Position
+    Camera.CFrame = CFrame.new(pos)
+        * CFrame.fromEulerAnglesYXZ(NoRecoilPitch, NoRecoilYaw, 0)
 end)
 
-----------------------------------------------------------------
--- MAIN AIMBOT LOOP — RenderStepped, ZERO raycasts
--- All visibility data read from VisScoreCache (written by bg tasks)
-----------------------------------------------------------------
 RunService.RenderStepped:Connect(function(dt)
     -- FOV circle
     local mc = UIS:GetMouseLocation()
@@ -709,7 +614,7 @@ RunService.RenderStepped:Connect(function(dt)
 
     local mouse = UIS:GetMouseLocation()
 
-    if not LockedTarget then
+    if not LockedTarget or not Cfg.StickyLock then
         local bestT, bestScore = nil, -1
         for _, e in ipairs(TargetList) do
             if not IsValid(e) then continue end
@@ -725,7 +630,6 @@ RunService.RenderStepped:Connect(function(dt)
             if Cfg.CrosshairTarget then
                 score = 1 - (sd / Cfg.FovRadius)
             else
-                -- FIX: ScoreTarget reads cache — no raycasts
                 score = ScoreTarget(e, sd, wd)
             end
 
@@ -736,7 +640,6 @@ RunService.RenderStepped:Connect(function(dt)
 
     if not LockedTarget then return end
 
-    -- FIX: BestAimPart reads cache — no raycasts
     local targetPart, isVis = BestAimPart(LockedTarget)
     if not targetPart then LockedTarget=nil; return end
 
@@ -762,16 +665,9 @@ RunService.RenderStepped:Connect(function(dt)
     local maxRange = Cfg.SniperMode and 9999 or Cfg.MaxRange
     if dist > maxRange then return end
 
-    -- Visibility gate: sniper mode is more lenient (0.1) since targets
-    -- at long range may have fewer cached visible parts due to 5Hz refresh.
-    -- Normal mode keeps 0.2 threshold.
     local visThreshold = Cfg.SniperMode and 0.1 or 0.2
     if visScore < visThreshold then return end
 
-    -- Screen proximity gate: how close crosshair must be to fire.
-    -- Sniper mode: tight (15px) — at range 1px = big miss, must be precise.
-    -- Normal mode: loose (80px) — aim assist handles the rest.
-    -- Only gate when onScreen (already computed above in aim block).
     local shootThreshold = Cfg.SniperMode and 15 or 80
     if onScreen then
         local sDist = (Vector2.new(sPos.X, sPos.Y) - mouse).Magnitude
@@ -790,23 +686,19 @@ RunService.RenderStepped:Connect(function(dt)
             end
         end
     elseif CurrentMode == "semi" then
-        -- Semi/sniper: press+release so bolt-action registers each shot
         if (now-LastShotFired) >= iv then
-            LastShotFired = now; NoRecoilCF = Camera.CFrame
+            LastShotFired = now
             pcall(mouse1press)
             task.delay(0.06, function() pcall(mouse1release) end)
         end
     else
         -- Auto
         if (now-LastShotFired) >= iv then
-            LastShotFired=now; NoRecoilCF=Camera.CFrame; pcall(mouse1click)
+            LastShotFired=now; pcall(mouse1click)
         end
     end
 end)
 
-----------------------------------------------------------------
--- RAYFIELD TABS (Window created at top of script)
-----------------------------------------------------------------
 local CombatTab  = Window:CreateTab("⚔ Combat",   4483362458)
 local VisualsTab = Window:CreateTab("👁 Visuals",  4483362458)
 local BindsTab   = Window:CreateTab("⌨ Keybinds", 4483362458)
@@ -815,18 +707,20 @@ local InfoTab    = Window:CreateTab("ℹ Info",      4483362458)
 CombatTab:CreateToggle({ Name="⚡ Master ["..GetKeyName(Keys.Master).."]", CurrentValue=false,
     Callback=function(v)
         Cfg.MasterEnabled=v; Cfg.NoRecoil=v
-        if not v then LockedTarget=nil; IsFiring=false; NoRecoilCF=nil end
+        if not v then LockedTarget=nil; IsFiring=false end
     end})
 CombatTab:CreateDivider()
-CombatTab:CreateToggle({ Name="No Recoil ["..GetKeyName(Keys.NoRecoil).."]", CurrentValue=false,
-    Callback=function(v) Cfg.NoRecoil=v; if not v then IsFiring=false; NoRecoilCF=nil end end})
-CombatTab:CreateToggle({ Name="Hold RMB to Aim", CurrentValue=false,
+CombatTab:CreateToggle({ Name="No Recoil ["..GetKeyName(Keys.NoRecoil).."]", CurrentValue=true,
+    Callback=function(v) Cfg.NoRecoil=v; if not v then IsFiring=false end end})
+CombatTab:CreateToggle({ Name="Hold RMB to Aim", CurrentValue=true,
     Callback=function(v) Cfg.HoldToAim=v end})
-CombatTab:CreateToggle({ Name="Crosshair Target", CurrentValue=false,
+CombatTab:CreateToggle({ Name="Crosshair Target", CurrentValue=true,
     Callback=function(v) Cfg.CrosshairTarget=v; if v then LockedTarget=nil end end})
 CombatTab:CreateToggle({ Name="Autoshoot ["..GetKeyName(Keys.Autoshoot).."]", CurrentValue=false,
     Callback=function(v) Cfg.Autoshoot=v end})
-CombatTab:CreateToggle({ Name="Auto Reload", CurrentValue=false,
+CombatTab:CreateToggle({ Name="Sticky Lock (keep target until RMB released)", CurrentValue=false,
+    Callback=function(v) Cfg.StickyLock=v end})
+CombatTab:CreateToggle({ Name="Auto Reload", CurrentValue=true,
     Callback=function(v) Cfg.AutoReload=v end})
 CombatTab:CreateDivider()
 CombatTab:CreateToggle({ Name="🔭 Sniper Mode (no range cap, tighter threshold)", CurrentValue=false,
@@ -836,16 +730,18 @@ CombatTab:CreateSlider({ Name="Max Range (studs, ignored in Sniper Mode)", Range
 CombatTab:CreateSlider({ Name="Bullet Speed (AR=900 Sniper=1500 SMG=700)", Range={300,2000}, Increment=50, CurrentValue=900,
     Callback=function(v) Cfg.BulletSpeed=v end})
 CombatTab:CreateDivider()
-CombatTab:CreateSlider({ Name="Sensitivity", Range={0.1,2},  Increment=0.05, CurrentValue=0.4, Callback=function(v) Cfg.Sensitivity=v end})
-CombatTab:CreateSlider({ Name="Smoothing",   Range={1,5},    Increment=0.1,  CurrentValue=1.2, Callback=function(v) Cfg.Smoothing=v   end})
+CombatTab:CreateSlider({ Name="Sensitivity", Range={0.1,2},  Increment=0.05, CurrentValue=0.3, Callback=function(v) Cfg.Sensitivity=v end})
+CombatTab:CreateSlider({ Name="Smoothing",   Range={1,5},    Increment=0.1,  CurrentValue=1.0, Callback=function(v) Cfg.Smoothing=v   end})
 CombatTab:CreateSlider({ Name="FOV Radius",  Range={50,600}, Increment=10,   CurrentValue=300, Callback=function(v) Cfg.FovRadius=v   end})
 
-VisualsTab:CreateToggle({ Name="ESP ["..GetKeyName(Keys.Esp).."]", CurrentValue=false,
+VisualsTab:CreateToggle({ Name="ESP ["..GetKeyName(Keys.Esp).."]", CurrentValue=true,
     Callback=function(v) Cfg.Esp=v end})
 VisualsTab:CreateToggle({ Name="Show FOV Circle", CurrentValue=true,
     Callback=function(v) Cfg.FovVisible=v end})
-VisualsTab:CreateSlider({ Name="ESP Fill Transparency",    Range={0,1}, Increment=0.05, CurrentValue=0.5, Callback=function(v) Cfg.EspFill=v    end})
-VisualsTab:CreateSlider({ Name="ESP Outline Transparency", Range={0,1}, Increment=0.05, CurrentValue=0.0, Callback=function(v) Cfg.EspOutline=v end})
+VisualsTab:CreateToggle({ Name="Hide Mode/Ammo Bar", CurrentValue=false,
+    Callback=function(v) Cfg.HideHUD=v; InfoFrame.Visible=not v end})
+VisualsTab:CreateSlider({ Name="ESP Fill Transparency",    Range={0,1}, Increment=0.05, CurrentValue=0.6, Callback=function(v) Cfg.EspFill=v    end})
+VisualsTab:CreateSlider({ Name="ESP Outline Transparency", Range={0,1}, Increment=0.05, CurrentValue=0.6, Callback=function(v) Cfg.EspOutline=v end})
 VisualsTab:CreateColorPicker({ Name="Visible Enemy", Color=Cfg.VisibleColor, Callback=function(v) Cfg.VisibleColor=v end})
 VisualsTab:CreateColorPicker({ Name="Hidden Enemy",  Color=Cfg.HiddenColor,  Callback=function(v) Cfg.HiddenColor=v  end})
 VisualsTab:CreateColorPicker({ Name="FOV Color",     Color=Cfg.FovColor,     Callback=function(v) Cfg.FovColor=v end})
@@ -881,4 +777,4 @@ InfoTab:CreateButton({ Name="Debug Dump (or press 0)", Callback=function()
     print("==================")
 end})
 
-print("BRM5 v28.0 | O=Master U=ESP P=Autoshoot I=NoRecoil 0=Debug")
+print("BRM5 v35.0 | Z=Master U=ESP P=Autoshoot I=NoRecoil 0=Debug")
